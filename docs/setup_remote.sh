@@ -2,6 +2,27 @@
 
 set -e
 
+# Функция для вывода инструкции по ручной установке cuDNN
+show_cudnn_manual_instructions() {
+    echo "\n========================================================"
+    echo "[КАК СКАЧАТЬ cuDNN ВРУЧНУЮ]"
+    echo "1. Откройте: https://developer.nvidia.com/rdp/cudnn-archive"
+    echo "4. Для CUDA 10.1 выберите 'cuDNN v7.6.5 for CUDA 10.1'"
+    echo "5. В появившемся списке выберите:\n   - cuDNN Runtime Library for Ubuntu18.04 (Deb)\n   - (опционально) cuDNN Developer Library for Ubuntu18.04 (Deb)"
+    echo "   НЕ выбирайте: 'Library for Linux', 'Code Samples', 'User Guide'!"
+    echo "6. Скачайте файл, который заканчивается на _amd64.deb"
+    echo "7. Загрузите файл на сервер и выполните:"
+    echo "   sudo dpkg -i имя_скачанного_файла.deb"
+    echo "8. После установки запустите этот скрипт снова"
+    echo "========================================================\n"
+}
+
+# Проверка и установка утилиты file (для диагностики deb-файлов)
+if ! command -v file &>/dev/null; then
+    echo "[INFO] Утилита 'file' не найдена, устанавливаю..."
+    sudo apt-get update && sudo apt-get install -y file
+fi
+
 # Цветовые коды для вывода
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -70,18 +91,94 @@ else
     print_status "CUDA toolkit найдена: $(nvcc --version | grep release)"
 fi
 
-# Проверка наличия cuDNN
-CUDNN_SO=$(find /usr/local/cuda/lib64/ -name 'libcudnn_ops*.so*' 2>/dev/null | head -n1)
-if [ -z "$CUDNN_SO" ]; then
-    print_warning "cuDNN не найден! Устанавливаю cuDNN 8.9.7 для CUDA 11.x..."
-    # Универсальная установка cuDNN для deb-based систем
-    CUDNN_DEB="libcudnn8_8.9.7.29-1+cuda11.8_amd64.deb"
-    wget -q https://developer.download.nvidia.com/compute/redist/cudnn/v8.9.7/$CUDNN_DEB
-    sudo dpkg -i $CUDNN_DEB
-    rm -f $CUDNN_DEB
-    print_success "cuDNN установлен."
+# === Универсальная проверка и установка cuDNN ===
+# Проверка через dpkg и наличие .so файлов
+if dpkg -s libcudnn7 &>/dev/null; then
+    print_success "cuDNN уже установлен (через dpkg). Пропускаю загрузку и установку."
+else
+    CUDNN_SO=$(find /usr/local/cuda/lib64/ -name 'libcudnn_ops*.so*' 2>/dev/null | head -n1)
+
+# Определяем версию CUDA
+CUDA_VERSION=""
+if command -v nvcc &> /dev/null; then
+    CUDA_VERSION=$(nvcc --version | grep release | sed 's/.*release \([0-9]*\.[0-9]*\).*/\1/')
+    print_status "Обнаружена CUDA версии $CUDA_VERSION"
+else
+    print_warning "CUDA не найдена, установка cuDNN невозможна!"
+fi
+
+    if [ -z "$CUDNN_SO" ]; then
+    if [ -n "$CUDA_VERSION" ]; then
+        case "$CUDA_VERSION" in
+            11.8)
+                CUDNN_DEB="libcudnn8_8.9.7.29-1+cuda11.8_amd64.deb"
+                CUDNN_URL="https://developer.download.nvidia.com/compute/redist/cudnn/v8.9.7/$CUDNN_DEB"
+                ;;
+            11.7)
+                CUDNN_DEB="libcudnn8_8.6.0.163-1+cuda11.7_amd64.deb"
+                CUDNN_URL="https://developer.download.nvidia.com/compute/redist/cudnn/v8.6.0/$CUDNN_DEB"
+                ;;
+            11.6)
+                CUDNN_DEB="libcudnn8_8.4.1.50-1+cuda11.6_amd64.deb"
+                CUDNN_URL="https://developer.download.nvidia.com/compute/redist/cudnn/v8.4.1/$CUDNN_DEB"
+                ;;
+            10.2)
+                CUDNN_DEB="libcudnn8_8.0.5.39-1+cuda10.2_amd64.deb"
+                CUDNN_URL="https://developer.download.nvidia.com/compute/redist/cudnn/v8.0.5/$CUDNN_DEB"
+                ;;
+            10.1)
+                CUDNN_DEB="libcudnn7_7.6.5.32-1+cuda10.1_amd64.deb"
+                CUDNN_URL="https://developer.download.nvidia.com/compute/redist/cudnn/v7.6.5/$CUDNN_DEB"
+                ;;
+            *)
+                print_warning "Автоматическая установка cuDNN не поддерживается для CUDA $CUDA_VERSION. Скачайте cuDNN вручную с https://developer.nvidia.com/rdp/cudnn-archive"
+                CUDNN_URL=""
+                ;;
+        esac
+        if [ -n "$CUDNN_URL" ]; then
+            print_status "Скачиваю cuDNN для CUDA $CUDA_VERSION..."
+            set +e
+            wget --timeout=30 --tries=2 -q $CUDNN_URL
+            WGET_EXIT=$?
+            if [ -f "$CUDNN_DEB" ] && [ -s "$CUDNN_DEB" ]; then
+                FILE_TYPE=$(file "$CUDNN_DEB")
+                FILE_SIZE=$(stat -c %s "$CUDNN_DEB")
+                # Проверяем, что это действительно deb-файл и его размер больше 1 МБ
+                if echo "$FILE_TYPE" | grep -q 'Debian binary package' && [ "$FILE_SIZE" -gt 1000000 ]; then
+                    sudo dpkg -i $CUDNN_DEB
+                    DPKG_EXIT=$?
+                    rm -f $CUDNN_DEB
+                    if [ $DPKG_EXIT -eq 0 ]; then
+                        print_success "cuDNN установлен для CUDA $CUDA_VERSION."
+                    else
+                        print_error "dpkg завершился с ошибкой ($DPKG_EXIT)!"
+                        show_cudnn_manual_instructions
+                        exit 1
+                    fi
+                else
+                    print_error "Файл $CUDNN_DEB не является deb-пакетом или слишком мал!"
+                    echo "Тип файла: $FILE_TYPE"
+                    echo "Размер файла: $FILE_SIZE байт"
+                    echo "Первые 10 строк файла:"
+                    head "$CUDNN_DEB"
+                    rm -f $CUDNN_DEB
+                    show_cudnn_manual_instructions
+                    exit 1
+                fi
+            else
+                print_error "Не удалось скачать cuDNN ($CUDNN_DEB) для CUDA $CUDA_VERSION! (wget exit code: $WGET_EXIT)"
+                show_cudnn_manual_instructions
+                exit 1
+            fi
+            set -e
+
+        fi
+    else
+        print_warning "Не удалось определить версию CUDA для установки cuDNN. Пропускаю установку cuDNN."
+    fi
 else
     print_success "cuDNN найден: $CUDNN_SO"
+fi
 fi
 
 # Экспорт LD_LIBRARY_PATH для CUDA и torch
@@ -119,22 +216,71 @@ python3.11 -m venv venv-xttsf
 source venv-xttsf/bin/activate
 print_success "Virtual environment venv-xttsf (python3.11) created and activated"
 
-# 5. Установка torch, torchaudio, torchvision (CUDA 11.8)
+# 5. Универсальная установка torch, torchaudio, torchvision под вашу CUDA
 pip install --upgrade pip
-REQUIRED_TORCH="2.1.2+cu118"
-REQUIRED_TORCHAUDIO="2.1.2+cu118"
-REQUIRED_TORCHVISION="0.16.2+cu118"
-INSTALLED_TORCH=$(python -c 'import torch; print(getattr(torch, "__version__", ""))' 2>/dev/null || echo "none")
-INSTALLED_TORCHAUDIO=$(python -c 'import torchaudio; print(getattr(torchaudio, "__version__", ""))' 2>/dev/null || echo "none")
-INSTALLED_TORCHVISION=$(python -c 'import torchvision; print(getattr(torchvision, "__version__", ""))' 2>/dev/null || echo "none")
-if [[ "$INSTALLED_TORCH" == "$REQUIRED_TORCH" && "$INSTALLED_TORCHAUDIO" == "$REQUIRED_TORCHAUDIO" && "$INSTALLED_TORCHVISION" == "$REQUIRED_TORCHVISION" ]]; then
-    print_status "torch, torchaudio, torchvision already installed and correct versions detected."
+
+TORCH_INDEX_URL=""
+TORCH_VERSION=""
+TORCHAUDIO_VERSION=""
+TORCHVISION_VERSION=""
+
+if [ -n "$CUDA_VERSION" ]; then
+    case "$CUDA_VERSION" in
+        11.8)
+            TORCH_INDEX_URL="https://download.pytorch.org/whl/cu118"
+            TORCH_VERSION="2.1.2+cu118"
+            TORCHAUDIO_VERSION="2.1.2+cu118"
+            TORCHVISION_VERSION="0.16.2+cu118"
+            ;;
+        11.7)
+            TORCH_INDEX_URL="https://download.pytorch.org/whl/cu117"
+            TORCH_VERSION="2.0.1+cu117"
+            TORCHAUDIO_VERSION="2.0.2+cu117"
+            TORCHVISION_VERSION="0.15.2+cu117"
+            ;;
+        11.6)
+            TORCH_INDEX_URL="https://download.pytorch.org/whl/cu116"
+            TORCH_VERSION="1.13.1+cu116"
+            TORCHAUDIO_VERSION="0.13.1+cu116"
+            TORCHVISION_VERSION="0.14.1+cu116"
+            ;;
+        10.2)
+            TORCH_INDEX_URL="https://download.pytorch.org/whl/cu102"
+            TORCH_VERSION="1.12.1+cu102"
+            TORCHAUDIO_VERSION="0.12.1+cu102"
+            TORCHVISION_VERSION="0.13.1+cu102"
+            ;;
+        10.1)
+            TORCH_INDEX_URL="https://download.pytorch.org/whl/cu101"
+            TORCH_VERSION="1.7.1+cu101"
+            TORCHAUDIO_VERSION="0.7.2"
+            TORCHVISION_VERSION="0.8.2+cu101"
+            ;;
+        *)
+            print_warning "Автоматическая установка torch не поддерживается для CUDA $CUDA_VERSION. Пожалуйста, установите вручную."
+            ;;
+    esac
 else
-    print_status "Installing correct versions of torch, torchaudio, torchvision (CUDA 11.8)"
-    pip install torch==2.1.2+cu118 torchaudio==2.1.2+cu118 torchvision==0.16.2+cu118 --index-url https://download.pytorch.org/whl/cu118
-    print_success "torch, torchaudio, torchvision installed."
+    print_warning "CUDA не найдена, будет установлена CPU-версия torch."
+    TORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
+    TORCH_VERSION="2.1.2+cpu"
+    TORCHAUDIO_VERSION="2.1.2+cpu"
+    TORCHVISION_VERSION="0.16.2+cpu"
 fi
-print_success "torch, torchaudio, torchvision installed"
+
+if [ -n "$TORCH_INDEX_URL" ] && [ -n "$TORCH_VERSION" ]; then
+    INSTALLED_TORCH=$(python -c 'import torch; print(getattr(torch, "__version__", ""))' 2>/dev/null || echo "none")
+    if [[ "$INSTALLED_TORCH" == "$TORCH_VERSION" ]]; then
+        print_status "torch $TORCH_VERSION уже установлен."
+    else
+        print_status "Устанавливаю torch==$TORCH_VERSION, torchaudio==$TORCHAUDIO_VERSION, torchvision==$TORCHVISION_VERSION"
+        pip install torch==${TORCH_VERSION} torchaudio==${TORCHAUDIO_VERSION} torchvision==${TORCHVISION_VERSION} --index-url $TORCH_INDEX_URL
+        print_success "torch, torchaudio, torchvision установлены."
+    fi
+else
+    print_warning "torch не был установлен автоматически. Установите вручную."
+fi
+print_success "torch, torchaudio, torchvision setup complete"
 
 # 6. Установка зависимостей проекта
 print_status "Installing project dependencies"
