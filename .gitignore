@@ -71,6 +71,9 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# Ignore data folder
+/data/
+
 # PyBuilder
 .pybuilder/
 target/
