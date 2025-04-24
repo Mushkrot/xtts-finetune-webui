@@ -34,26 +34,52 @@ else
     print_status "Directory /ai/xtts-finetune-webui already exists"
 fi
 
-# === БЛОК: Установка и проверка CUDA/cuDNN ===
-print_status "Checking CUDA toolkit installation..."
+# === БЛОК: Проверка и установка драйверов NVIDIA, CUDA и cuDNN ===
+print_status "Проверка наличия драйверов NVIDIA..."
+if ! command -v nvidia-smi &> /dev/null; then
+    print_warning "Драйверы NVIDIA не найдены! Устанавливаю последние драйверы..."
+    sudo apt-get update
+    sudo apt-get install -y ubuntu-drivers-common
+    sudo ubuntu-drivers autoinstall
+    if ! command -v nvidia-smi &> /dev/null; then
+        print_error "Не удалось установить драйверы NVIDIA. Завершаю работу."
+        exit 1
+    fi
+    print_success "Драйверы NVIDIA успешно установлены."
+else
+    print_success "Драйверы NVIDIA найдены: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader)"
+fi
+
+print_status "Проверка наличия CUDA toolkit..."
 if ! command -v nvcc &> /dev/null; then
-    print_warning "CUDA toolkit not found! Installing CUDA 11.8..."
-    wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-ubuntu2004.pin
-    sudo mv cuda-ubuntu2004.pin /etc/apt/preferences.d/cuda-repository-pin-600
-    sudo apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/3bf863cc.pub
-    sudo add-apt-repository "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/ /"
+    print_warning "CUDA toolkit не найден! Устанавливаю CUDA 11.8..."
+    # Определяем дистрибутив для выбора репозитория
+    . /etc/os-release
+    DISTRO_ID=${ID:-ubuntu}
+    DISTRO_VERSION=${VERSION_ID:-20.04}
+    CUDA_REPO="https://developer.download.nvidia.com/compute/cuda/repos/${DISTRO_ID}${DISTRO_VERSION/./}/x86_64/"
+    CUDA_PIN="cuda-${DISTRO_ID}${DISTRO_VERSION/./}.pin"
+    wget -q ${CUDA_REPO}${CUDA_PIN}
+    sudo mv ${CUDA_PIN} /etc/apt/preferences.d/cuda-repository-pin-600
+    sudo apt-key adv --fetch-keys ${CUDA_REPO}3bf863cc.pub
+    sudo add-apt-repository -y "deb ${CUDA_REPO} /"
     sudo apt-get update
     sudo apt-get -y install cuda-toolkit-11-8
-    print_success "CUDA 11.8 installed."
+    print_success "CUDA 11.8 установлена."
 else
-    print_status "CUDA toolkit found: $(nvcc --version | grep release)"
+    print_status "CUDA toolkit найдена: $(nvcc --version | grep release)"
 fi
 
 # Проверка наличия cuDNN
 CUDNN_SO=$(find /usr/local/cuda/lib64/ -name 'libcudnn_ops*.so*' 2>/dev/null | head -n1)
 if [ -z "$CUDNN_SO" ]; then
-    print_warning "cuDNN не найден! Для работы PyTorch с GPU требуется cuDNN 8.x для CUDA 11.8."
-    print_warning "Установите cuDNN вручную, если требуется поддержка GPU."
+    print_warning "cuDNN не найден! Устанавливаю cuDNN 8.9.7 для CUDA 11.x..."
+    # Универсальная установка cuDNN для deb-based систем
+    CUDNN_DEB="libcudnn8_8.9.7.29-1+cuda11.8_amd64.deb"
+    wget -q https://developer.download.nvidia.com/compute/redist/cudnn/v8.9.7/$CUDNN_DEB
+    sudo dpkg -i $CUDNN_DEB
+    rm -f $CUDNN_DEB
+    print_success "cuDNN установлен."
 else
     print_success "cuDNN найден: $CUDNN_SO"
 fi
@@ -62,11 +88,18 @@ fi
 export LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:$(pwd)/venv-xttsf/lib/python3.11/site-packages/torch/lib:$LD_LIBRARY_PATH"
 print_success "LD_LIBRARY_PATH set: $LD_LIBRARY_PATH"
 
-# Проверка наличия libcudnn_ops.so
-if ! find $LD_LIBRARY_PATH -name 'libcudnn_ops*.so*' | grep -q .; then
-    print_warning "libcudnn_ops.so не найден в LD_LIBRARY_PATH! Возможны ошибки при запуске с GPU."
-else
-    print_success "libcudnn_ops.so найден в LD_LIBRARY_PATH."
+# Корректная проверка наличия libcudnn_ops.so в каждом пути LD_LIBRARY_PATH
+FOUND_CUDNN_OPS=0
+IFS=":" read -ra CUDA_PATHS <<< "$LD_LIBRARY_PATH"
+for p in "${CUDA_PATHS[@]}"; do
+    if [ -d "$p" ] && ls "$p"/libcudnn_ops*.so* 1>/dev/null 2>&1; then
+        print_success "libcudnn_ops.so найден в $p"
+        FOUND_CUDNN_OPS=1
+        break
+    fi
+done
+if [ $FOUND_CUDNN_OPS -eq 0 ]; then
+    print_warning "libcudnn_ops.so не найден ни в одном каталоге из LD_LIBRARY_PATH! Возможны ошибки при запуске с GPU."
 fi
 
 # 3. Проверка и установка Python 3.11
