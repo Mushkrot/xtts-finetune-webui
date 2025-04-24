@@ -90,3 +90,24 @@ print_success "xtts-finetune-webui setup complete!"
 echo -e "\nTo start the web UI, run:\n"
 echo "source /ai/xtts-finetune-webui/venv-xttsf/bin/activate"
 echo "python xtts_demo.py"
+
+# === Мониторинг простоя контейнера ===
+if [ -f /monitor_shutdown.sh ]; then
+    chmod +x /monitor_shutdown.sh
+    echo "\nmonitor_shutdown.sh готов.\n"
+    # Попытка автоматически добавить CMD в Dockerfile, если он есть
+    if [ -f /ai/xtts-finetune-webui/Dockerfile ]; then
+        grep -q '^CMD' /ai/xtts-finetune-webui/Dockerfile && \
+            sed -i 's/^CMD.*/CMD ["\/monitor_shutdown.sh"]/' /ai/xtts-finetune-webui/Dockerfile || \
+            echo 'CMD ["/monitor_shutdown.sh"]' >> /ai/xtts-finetune-webui/Dockerfile
+        echo "CMD для monitor_shutdown.sh добавлен в Dockerfile. Пересоберите образ и запускайте контейнер как обычно."
+    else
+        echo "\n=== ВАЖНО ==="
+        echo "Добавьте в ваш Dockerfile строку:"
+        echo 'CMD ["/monitor_shutdown.sh"]'
+        echo "или запускайте контейнер так:"
+        echo 'docker run ... <image> /monitor_shutdown.sh'
+    fi
+else
+    echo "\nmonitor_shutdown.sh не найден в корне контейнера! Положите его в /monitor_shutdown.sh перед сборкой образа."
+fi
