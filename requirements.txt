@@ -1,11 +1,11 @@
 # Совместимые версии для стабильной работы xtts-finetune-webui
 # requirements for xtts-finetune-webui (optimized)
-faster-whisper==1.1.1
+faster-whisper
 ctranslate2==4.4.0
 gradio==4.44.1
 spacy==3.7.5
-coqui-tts[languages]==0.24.2
-numpy==1.26.4
+coqui-tts[languages]
+numpy
 tokenizers==0.19.1
 huggingface-hub==0.30.2
 
