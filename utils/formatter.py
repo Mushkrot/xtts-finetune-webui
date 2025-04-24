@@ -51,6 +51,41 @@ def list_files(basePath, validExts=None, contains=None):
                 audioPath = os.path.join(rootDir, filename)
                 yield audioPath
 
+def split_text_ru_safe(text, max_length=180):
+    """
+    Разбивает русский текст на куски не длиннее max_length, стараясь делить по знакам препинания или пробелам.
+    """
+    import re
+    sentences = re.split(r'([.!?])', text)
+    chunks = []
+    current = ''
+    for i in range(0, len(sentences)-1, 2):
+        s = (sentences[i]+sentences[i+1]).strip()
+        if len(current) + len(s) + 1 <= max_length:
+            current += (' ' if current else '') + s
+        else:
+            if current:
+                chunks.append(current.strip())
+            if len(s) <= max_length:
+                current = s
+            else:
+                # если предложение всё равно слишком длинное — режем по словам
+                words = s.split()
+                temp = ''
+                for w in words:
+                    if len(temp) + len(w) + 1 <= max_length:
+                        temp += (' ' if temp else '') + w
+                    else:
+                        if temp:
+                            chunks.append(temp.strip())
+                        temp = w
+                if temp:
+                    chunks.append(temp.strip())
+                current = ''
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
 def format_audio_list(audio_files, asr_model, target_language="en", out_path=None, buffer=0.2, eval_percentage=0.15, speaker_name="coqui", gradio_progress=None):
     audio_total_size = 0
     os.makedirs(out_path, exist_ok=True)
@@ -137,6 +172,29 @@ def format_audio_list(audio_files, asr_model, target_language="en", out_path=Non
             if word.word[-1] in ["!", "。", ".", "?"]:
                 sentence = sentence[1:]
                 sentence = multilingual_cleaners(sentence, target_language)
+                # --- ДОБАВЛЕНО: разбиение для русского языка ---
+                if target_language.startswith('ru') and len(sentence) > 180:
+                    for chunk in split_text_ru_safe(sentence, max_length=180):
+                        audio_file_name, _= os.path.splitext(os.path.basename(audio_path))
+                        audio_file = f"wavs/{audio_file_name}_{str(i).zfill(8)}.wav"
+                        if word_idx + 1 < len(words_list):
+                            next_word_start = words_list[word_idx + 1].start
+                        else:
+                            next_word_start = (wav.shape[0] - 1) / sr
+                        word_end = min((word.end + next_word_start) / 2, word.end + buffer)
+                        absolute_path = os.path.join(out_path, audio_file)
+                        os.makedirs(os.path.dirname(absolute_path), exist_ok=True)
+                        i += 1
+                        audio = wav[int(sr*sentence_start):int(sr *word_end)].unsqueeze(0)
+                        if audio.size(-1) >= sr / 3:
+                            torchaudio.save(absolute_path, audio, sr)
+                        metadata["audio_file"].append(audio_file)
+                        metadata["text"].append(chunk)
+                        metadata["speaker_name"].append(speaker_name)
+                    first_word = True
+                    metadata = {"audio_file": [], "text": [], "speaker_name": []}
+                    continue
+                # --- КОНЕЦ ДОБАВЛЕНИЯ ---
                 audio_file_name, _= os.path.splitext(os.path.basename(audio_path))
                 audio_file = f"wavs/{audio_file_name}_{str(i).zfill(8)}.wav"
 
