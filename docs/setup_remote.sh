@@ -34,6 +34,41 @@ else
     print_status "Directory /ai/xtts-finetune-webui already exists"
 fi
 
+# === БЛОК: Установка и проверка CUDA/cuDNN ===
+print_status "Checking CUDA toolkit installation..."
+if ! command -v nvcc &> /dev/null; then
+    print_warning "CUDA toolkit not found! Installing CUDA 11.8..."
+    wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-ubuntu2004.pin
+    sudo mv cuda-ubuntu2004.pin /etc/apt/preferences.d/cuda-repository-pin-600
+    sudo apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/3bf863cc.pub
+    sudo add-apt-repository "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/ /"
+    sudo apt-get update
+    sudo apt-get -y install cuda-toolkit-11-8
+    print_success "CUDA 11.8 installed."
+else
+    print_status "CUDA toolkit found: $(nvcc --version | grep release)"
+fi
+
+# Проверка наличия cuDNN
+CUDNN_SO=$(find /usr/local/cuda/lib64/ -name 'libcudnn_ops*.so*' 2>/dev/null | head -n1)
+if [ -z "$CUDNN_SO" ]; then
+    print_warning "cuDNN не найден! Для работы PyTorch с GPU требуется cuDNN 8.x для CUDA 11.8."
+    print_warning "Установите cuDNN вручную, если требуется поддержка GPU."
+else
+    print_success "cuDNN найден: $CUDNN_SO"
+fi
+
+# Экспорт LD_LIBRARY_PATH для CUDA и torch
+export LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:$(pwd)/venv-xttsf/lib/python3.11/site-packages/torch/lib:$LD_LIBRARY_PATH"
+print_success "LD_LIBRARY_PATH set: $LD_LIBRARY_PATH"
+
+# Проверка наличия libcudnn_ops.so
+if ! find $LD_LIBRARY_PATH -name 'libcudnn_ops*.so*' | grep -q .; then
+    print_warning "libcudnn_ops.so не найден в LD_LIBRARY_PATH! Возможны ошибки при запуске с GPU."
+else
+    print_success "libcudnn_ops.so найден в LD_LIBRARY_PATH."
+fi
+
 # 3. Проверка и установка Python 3.11
 if ! command -v python3.11 &> /dev/null; then
     print_status "Installing Python 3.11 and venv..."
@@ -51,18 +86,14 @@ python3.11 -m venv venv-xttsf
 source venv-xttsf/bin/activate
 print_success "Virtual environment venv-xttsf (python3.11) created and activated"
 
-# 4. Установка torch, torchaudio, torchvision (CUDA 11.8)
-print_status "Installing torch, torchaudio, torchvision (CUDA 11.8)"
+# 5. Установка torch, torchaudio, torchvision (CUDA 11.8)
 pip install --upgrade pip
-# Проверка и установка torch, torchaudio, torchvision (CUDA 11.8, совместимые версии)
 REQUIRED_TORCH="2.1.2+cu118"
 REQUIRED_TORCHAUDIO="2.1.2+cu118"
 REQUIRED_TORCHVISION="0.16.2+cu118"
-
 INSTALLED_TORCH=$(python -c 'import torch; print(getattr(torch, "__version__", ""))' 2>/dev/null || echo "none")
 INSTALLED_TORCHAUDIO=$(python -c 'import torchaudio; print(getattr(torchaudio, "__version__", ""))' 2>/dev/null || echo "none")
 INSTALLED_TORCHVISION=$(python -c 'import torchvision; print(getattr(torchvision, "__version__", ""))' 2>/dev/null || echo "none")
-
 if [[ "$INSTALLED_TORCH" == "$REQUIRED_TORCH" && "$INSTALLED_TORCHAUDIO" == "$REQUIRED_TORCHAUDIO" && "$INSTALLED_TORCHVISION" == "$REQUIRED_TORCHVISION" ]]; then
     print_status "torch, torchaudio, torchvision already installed and correct versions detected."
 else
@@ -72,12 +103,22 @@ else
 fi
 print_success "torch, torchaudio, torchvision installed"
 
-# 5. Установка зависимостей проекта
+# 6. Установка зависимостей проекта
 print_status "Installing project dependencies"
 pip install -r requirements.txt
 print_success "Project dependencies installed"
 
-# 6. Настройка переменных окружения (если есть)
+# 7. Копирование кастомного transcribe.py
+print_status "Replacing faster_whisper/transcribe.py with custom version from docs..."
+FW_PATH="venv-xttsf/lib/python3.11/site-packages/faster_whisper/transcribe.py"
+if [ -f "$FW_PATH" ]; then
+    cp "$FW_PATH" "$FW_PATH.bak"
+    print_status "Backup of original transcribe.py created."
+fi
+cp "/ai/xtts-finetune-webui/docs/transcribe.py" "$FW_PATH"
+print_success "Custom transcribe.py copied to $FW_PATH"
+
+# 8. Настройка переменных окружения (если есть)
 if [ -f "set_project_env.sh" ]; then
     print_status "Sourcing set_project_env.sh"
     source ./set_project_env.sh
