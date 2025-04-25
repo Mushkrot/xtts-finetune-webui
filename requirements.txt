@@ -1,8 +1,8 @@
 faster_whisper==1.1.0
-ctranslate2==4.4.0
 gradio==4.44.1
 spacy==3.7.5
-numpy
-tokenizers==0.19.1
-huggingface-hub==0.30.2
-TTS==0.15.0
+coqui-tts[languages]==0.24.2
+cutlet==0.5.0
+fugashi[unidic-lite]==1.4.0
+fastapi==0.103.1
+pydantic==2.3.0
